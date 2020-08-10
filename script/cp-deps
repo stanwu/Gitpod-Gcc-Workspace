@@ -1,0 +1,98 @@
+#!/usr/bin/perl -w
+use strict;
+
+sub usage {
+    print "\nCopy shared library dependencies of an executable into some directory\n\n";
+    print "Usage: $0 <program> [<dest_dir>]\n";
+    print "  e.g. $0 vim [vim_standalone]\n\n";
+    exit 1;
+}
+usage() unless @ARGV >= 1;
+
+my ($program, $destdir) = @ARGV;
+
+my ($prg_name) = $program =~ m|([^/]+)/*$|;
+$destdir = "./${prg_name}_standalone" unless $destdir;
+my $libdir = "$destdir/lib";
+
+sub copy {
+    my $lib  = shift;
+    print "$lib\n";
+    system 'cp', '-fa', $lib, $libdir;
+   
+}
+
+my $exe = qx(which $program)  # ldd doesn't look in PATH
+          or die "Failed to determine path of $program";
+chomp $exe;
+
+for my $dir ($destdir, $libdir) {
+    unless (-d $dir) {
+        mkdir $dir or die "Couldn't create $dir: $!";
+    }
+}
+
+for my $dep (split /\n/, qx(ldd $exe) ) {
+    my ($lib) = $dep =~ m|=>\s+(\S+)\s+\(0x|;  # extract lib path
+    unless (defined $lib) {
+        # we want the dynamic loader, too
+        ($lib) = $dep =~ m|(/lib.*/ld-linux.*\.so\S*)|;
+        if (defined $lib) {
+            my ($ld_so) = $lib =~ m|([^/]+)$|;
+            symlink $ld_so, "$libdir/ld.so";   # additional unified link
+        }
+    }
+    if (defined $lib) {
+        unless (-l $lib) {
+            copy $lib;
+
+        } else {  # symlink
+            print "$lib\n";
+            my ($name) = $lib =~ m|([^/]+)$|;  # orig link name
+            while (-l $lib) {  # resolve...
+                my $path = $lib;
+                $lib = readlink $lib;
+                unless ($lib =~ m|^/|) {  # relative ?
+                    (my $dir = $path) =~ s|[^/]+$||;
+                    $lib = $dir.$lib;
+                }
+            }
+            copy $lib;  # resolved path
+            my ($file) = $lib =~ m|([^/]+)$|;  # name of resolved/copied file
+            my $lnk = "$libdir/$name";
+            unlink $lnk;
+            symlink $file, $lnk; # create directory-local link
+        }
+        print "\n";
+    }
+}
+
+my ($exe_name) = $exe =~ m|([^/]+)$|;
+system 'cp', '-faL', $exe, "$destdir/$exe_name.bin";
+
+#####
+
+use Cwd;
+my $instdir = Cwd::realpath($destdir);
+
+my $wrapper = "$destdir/$exe_name";
+open my $fh, ">", $wrapper or die "Couldn't create wrapper $wrapper: $!";
+
+print $fh <<"EOF";
+#!/bin/sh
+
+# adjust this path if you move the installation
+myINSTDIR=$instdir
+
+myEXE=\$myINSTDIR/$exe_name.bin
+myLIBDIR=\$myINSTDIR/lib
+myLDSO=\$myLIBDIR/ld.so
+
+# uncomment to enable debug output (like ldd)
+#\$myLDSO --library-path \$myLIBDIR --list \$myEXE
+
+exec \$myLDSO --library-path \$myLIBDIR \$myEXE "\$@"
+EOF
+
+close $fh;
+chmod 0755, $wrapper, "$destdir/$exe_name.bin";
