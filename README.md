@@ -1,5 +1,6 @@
-# gitpod_workspace
-Gitpod Workspace
+# Gitpod Gcc Workspace
+
+Gitpod workspace for build from souce code with Gcc
 
 ### build-tmux.sh
 
